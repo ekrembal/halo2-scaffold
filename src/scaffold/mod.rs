@@ -15,7 +15,7 @@ use halo2_base::{
             commitment::{Params, ParamsProver},
             kzg::{
                 commitment::{KZGCommitmentScheme, ParamsKZG},
-                multiopen::VerifierSHPLONK,
+                multiopen::{ProverSHPLONK, VerifierSHPLONK},
                 strategy::SingleStrategy,
             },
         },
@@ -26,8 +26,9 @@ use halo2_base::{
 };
 use serde::de::DeserializeOwned;
 use snark_verifier_sdk::{
+    evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier_shplonk},
     gen_pk,
-    halo2::{gen_snark_shplonk, read_snark, PoseidonTranscript},
+    halo2::{gen_proof, gen_snark_shplonk, read_snark, PoseidonTranscript},
     read_pk, CircuitExt, NativeLoader,
 };
 use std::{
@@ -159,6 +160,33 @@ pub fn run_on_inputs<T: DeserializeOwned>(
             let verification_time = start.elapsed();
             println!("Snark verified successfully in {:?}", verification_time);
             circuit.clear();
+        }
+        SnarkCmd::SnarkVerifier => {
+            let pinning_path = config_path.join(PathBuf::from(format!("{name}.json")));
+            let mut pinning_file = File::open(&pinning_path)
+                .unwrap_or_else(|_| panic!("Could not read file at {pinning_path:?}"));
+            let pinning: (BaseCircuitParams, MultiPhaseThreadBreakPoints) =
+                serde_json::from_reader(&mut pinning_file).expect("Could not read pinning file");
+            let circuit =
+                precircuit.create_circuit(CircuitBuilderStage::Prover, Some(pinning), &params);
+
+            let pk_path = data_path.join(PathBuf::from(format!("{name}.pk")));
+            let pk = custom_read_pk(pk_path, &circuit);
+
+            let deployment_code = gen_evm_verifier_shplonk::<BaseCircuitBuilder<Fr>>(
+                &params,
+                pk.get_vk(),
+                circuit.num_instance(),
+                None,
+            );
+
+            let proof = gen_evm_proof_shplonk::<BaseCircuitBuilder<Fr>>(
+                &params,
+                &pk,
+                circuit.clone(),
+                circuit.instances(),
+            );
+            evm_verify(deployment_code, circuit.instances(), proof);
         }
     }
 }
